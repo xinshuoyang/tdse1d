@@ -47,8 +47,8 @@ def dconvgatoms(g1,g2):
     """
     Compute the convolution of two Gaussian atoms
     int_{R}g1(x-y)g2(y)dy
-    where the kernel k(x-y) = coef*gatom(x,σ,y)
-    and g(x) = coef*gatom(y,σ,μ).
+    where the kernel k(x-y) = coef*gatom(x,sigma,y)
+    and g(x) = coef*gatom(y,sigma,mu).
     """
     coef = (4.0*np.pi*g1.sigma*g2.sigma/(g1.sigma+g2.sigma))**0.25*g1.coef*g2.coef
     sigma = g1.sigma+g2.sigma
@@ -67,8 +67,8 @@ def sfastchol(g,krankmax,eps):
         eps2 = 1e-15
         print("input eps < 1e-7, eps2 is reset to 1e-15")
 
-    L = np.empty([krankmax,g.nterms],dtype=float)
-    diag = np.ones(g.nterms,dtype=float)
+    L = np.empty([krankmax,g.nterms],dtype=np.float64)
+    diag = np.ones(g.nterms,dtype=np.float64)
     ipivot = np.arange(g.nterms)
     newnterms = 0
 
@@ -279,6 +279,8 @@ def test_tise_solve():
     plt.show()
     print(energy)
 
+########################################################################################################################
+
 class zgatom:
     def __init__(self,coef,sigma,mu):
         self.coef = coef
@@ -288,6 +290,184 @@ class zgatom:
     def eval(self,x):
         return self.coef*((1.0/self.sigma+1.0/np.conj(self.sigma))/2.0/np.pi)**0.25*\
             np.exp(-np.imag(self.mu)**2.0/np.real(self.sigma)/2.0)*np.exp(-(x-self.mu)**2.0/self.sigma/2.0)
+
+class zgmm():
+    def __init__(self,nterms=0):
+        self.nterms = nterms
+        self.atoms = []
+
+    def eval(self,x):
+        return np.sum([self.atoms[i].eval(x) for i in range(self.nterms)],axis=0)
+
+def zinnerprod(g1,g2,use_coef=True):
+    res = np.sqrt(2.0)*(np.real(g1.sigma)*np.real(g2.sigma))**0.25/\
+            np.sqrt(np.abs(g1.sigma)*np.abs(g2.sigma))/np.sqrt(1.0/g1.sigma+1.0/np.conj(g2.sigma))*\
+            np.exp(-np.imag(g1.mu)**2.0/np.real(g1.sigma)/2.0)*\
+            np.exp(-np.imag(g2.mu)**2.0/np.real(g2.sigma)/2.0)*\
+            np.exp(-(g1.mu-np.conj(g2.mu))**2.0/(g1.sigma+np.conj(g2.sigma))/2.0)
+    if use_coef:
+        res *= g1.coef*g2.coef
+    return res
+
+def zconvheatgatom(t,g):
+    """
+    Compute the convolution of the heat kernel (with imaginary argument)
+    and a Gaussian atom:
+    int_{R}  1/(2πit)^(1/2) exp(i(x-y)^2/(2t)) zg(y) dy.
+    """
+    coef = g.coef*np.sqrt(np.abs(t*1.0j+g.sigma)/(1.0j*t/g.sigma+1.0)/np.abs(g.sigma))
+    sigma = 1.0j*t+g.sigma
+    mu = g.mu
+    return zgatom(coef,sigma,mu)
+
+def  zprodgatoms(g1,g2):
+    """
+    Compute the product of two Gaussian atoms
+    """
+    sigma = 1.0/(1.0/g1.sigma+1.0/g2.sigma)
+    mu = sigma*(g1.mu/g1.sigma+g2.mu/g2.sigma)
+    coef = g1.coef*g2.coef*((1.0/g1.sigma+1.0/np.conj(g1.sigma))/2.0/np.pi)**0.25*\
+        ((1.0/g2.sigma+1.0/np.conj(g2.sigma))/2.0/np.pi)^0.25*\
+        np.exp(-(g1.mu-g2.mu)^2.0/(g1.sigma+g2.sigma)/2.0)*\
+        np.exp(-np.imag(g1.mu)**2.0/np.real(g1.sigma)/2.0)*\
+        np.exp(-np.imag(g2.mu)**2.0/np.real(g2.sigma)/2.0)/\
+        ((1.0/sigma+1.0/np.conj(sigma))/2.0/np.pi)**0.25*np.exp(np.imag(mu)**2.0/np.real(sigma)/2.0)
+    return zgatom(coef,sigma,mu)
+
+def cfastchol(g,krankmax,eps):
+    """
+    Reduce the number of terms in a wave function (complex64) that is
+    represented as a Gaussian mixture.
+    The reduced mixture has up to 7~8 digits of accuracy
+    (depending on the input eps).
+
+    Inputs:
+
+    zw            --- wave function to be reduced
+    krankmax      --- maximum expected number of terms;
+                      if exceeded info = 1 on exit, otherwise info = 0
+
+    eps           --- accuracy, the resulting accuracy is eps,
+                      eps^2 can be 1d-14 - 1d-15 or so
+                      if ifl = 1 then it is reset to the value reached
+                      at krankmax
+
+    Outputs:
+
+    ipivot        --- pivot vector
+    zw            --- reduced representation
+
+    info          --- info = 1 if number of terms exceeds krankmax,
+                      info = 0, otherwise
+    """
+
+    # set error threshold
+    eps2 = eps*eps
+    if eps2 < 1e-15:
+        eps2 = 1e-15
+        print("input eps < 1e-7, eps2 is reset to 1e-15")
+
+    L = np.empty([krankmax,g.nterms],dtype=np.complex128)
+    diag = np.ones(g.nterms,dtype=np.float64)
+    ipivot = np.arange(g.nterms)
+    newnterms = 0
+
+    for i in range(g.nterms):
+        # find largest diagonal element
+        dmax = diag[ipivot[i]]
+        imax = i
+        for j in range(i+1,g.nterms):
+            if dmax < diag[ipivot[j]]:
+                dmax = diag[ipivot[j]]
+                imax = j
+
+        # swap to the leading position
+        ipivot[i],ipivot[imax] = ipivot[imax],ipivot[i]
+
+        # check if the diagonal element large enough
+        if diag[ipivot[i]] < eps2:
+            break
+        
+        L[i,ipivot[i]] = sqrt(diag[ipivot[i]])
+
+        for j in range(i+1,g.nterms):
+            r1 = np.dot(L[0:i-1,ipivot[i]],L[0:i-1,ipivot[j]])
+            r2 = zinnerprod(g.atoms[ipivot[i]],g.atoms[ipivot[j]])
+            L[i,ipivot[j]] = (r2-r1)/L[i,ipivot[i]]
+            diag[ipivot[j]] -= L[i,ipivot[j]]*np.conj(L[i,ipivot[j]])
+        newnterms += 1
+
+    # solve for new coefficients using forward/backward substitution
+    newcoefs = np.zeros(newnterms,dtype=np.complex128)
+
+    for i in range(newnterms):
+        for j in range(newnterms+1,g.nterms):
+            newcoefs[i] += g.atoms[ipivot[j]].coef*\
+                np.dot(L[1:i,ipivot[j]],L[1:i,ipivot[i]])
+            # newcoefs[i] += zw.atoms[ipivot[j]].coef*
+            #     zinnerprod(zw.atoms[ipivot[j]],zw.atoms[ipivot[i]])
+
+    # forward substitution
+    for i in range(newnterms):
+        r1 = 0.0
+        for j in range(i-1):
+            r1 += L[j,ipivot[i]]*newcoefs[j]
+        newcoefs[i] = (newcoefs[i]-r1)/L[i,ipivot[i]]
+
+    # backward substitution
+    for i in range(newnterms-1,-1,-1):
+        r1 = 0.0
+        for j in range(i+1,newnterms):
+            r1 += np.conj(L[i,ipivot[j]])*newcoefs[j]
+        newcoefs[i] = (newcoefs[i]-r1)/np.conj(L[i,ipivot[i]])
+
+    # add "skeleton" terms and copy exponents and shifts
+    newg = zgmm(newnterms)
+    for i in range(newnterms):
+        newg.atoms.append(zgatom(newcoefs[i]+g.atoms[ipivot[i]].coef,
+            g.atoms[ipivot[i]].sigma,g.atoms[ipivot[i]].mu))
+
+    return newg
+
+def get_potential():
+    pass
+
+def irk1_solve_single_step(tstep,psi,V):
+    """
+    G.B. derivation. Probably wrong.
+
+    ψ -- solution at current step
+    """
+    V,Vre,Vim = get_potential(tstep)
+
+    # Compute ϕ0(y,τ/2)
+    psi0h = zgmm(psi.nterms)
+
+    for i in range(psi.nterms):
+        psi0h.atoms.append(zconvheatgatom(tstep/2.0,psi.atoms[i]))
+
+    psinext = zgmm()
+
+    # psi0(x,τ)
+    for i in range(psi.nterms):
+        psinext.atoms.append(zconvheatgatom(tstep,psi.atoms[i]))
+    psinext.nterms = len(psinext.atoms)
+
+    # Convolution ∫ G0(x-y,τ/2)*V(y,τ/2)*ψ0(y,τ/2) dy
+    for (a1,a2) in product(V.atoms,psi0h.atoms):
+        psinext.atoms.append(zconvheatgatom(tstep/2.0,zprodgatoms(a1,a2)))
+        psinext.atoms[-1].coef *= -tstep*1.0j
+
+    # Convolution ∫ G0(x-y,τ/2) Vre(y,τ/2) ψ0(y,τ/2) dy
+    for (a1,a2) in product(Vre.atoms,psi0h.atoms):
+        psinext.atoms.append(zconvheatgatom(tstep/2.0,zprodgatoms(a1,a2)))
+        psinext.atoms[-1].coef *= -0.5*tstep*tstep
+
+    for (a1,a2) in product(Vim.atoms,psi0h.atoms):
+        psinext.atoms.append(zconvheatgatom(tstep/2.0,zprodgatoms(a1,a2)))
+        psinext.atoms[-1].coef *= -0.25j*tstep*tstep*tstep
+
+    return cfastchol(psinext,1000,1e-7)
 
 import matplotlib.pyplot as plt
 if __name__ == '__main__':
