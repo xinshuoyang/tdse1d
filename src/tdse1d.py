@@ -19,7 +19,7 @@ class dgamm:
         return np.sum([self.atoms[i].eval(x) for i in range(self.nterms)],axis=0)
 
 def dinnerprod(g1,g2,use_coef=False):
-    res = np.sqrt(2.0)*(g1.sigma*g2.sigma)**0.25/np.sqrt(g1.sigma+g2.sigma)*exp(-(g1.mu-g2.mu)**2.0/(g1.sigma+g2.sigma)/2.0)
+    res = np.sqrt(2.0)*(g1.sigma*g2.sigma)**0.25/np.sqrt(g1.sigma+g2.sigma)*np.exp(-(g1.mu-g2.mu)**2.0/(g1.sigma+g2.sigma)/2.0)
     if use_coef:
         res *= g1.coef*g2.coef
     return res
@@ -38,7 +38,7 @@ def dgradinnerprod(g1,g2,use_coef=False):
 
 
 def dprodgatoms(g1,g2):
-    coef = g1.coef*g2.coef/(np.pi*(g1.sigma+g2.sigma))^0.25*exp(-(g1.mu-g2.mu)^2.0/(g1.sigma+g2.sigma)/2.0)
+    coef = g1.coef*g2.coef/(np.pi*(g1.sigma+g2.sigma))**0.25*np.exp(-(g1.mu-g2.mu)**2.0/(g1.sigma+g2.sigma)/2.0)
     sigma = g1.sigma*g2.sigma/(g1.sigma+g2.sigma)
     mu = (g1.sigma*g2.mu+g2.sigma*g1.mu)/(g1.sigma+g2.sigma)
     return dgatom(coef,sigma,mu)
@@ -50,7 +50,7 @@ def dconvgatoms(g1,g2):
     where the kernel k(x-y) = coef*gatom(x,σ,y)
     and g(x) = coef*gatom(y,σ,μ).
     """
-    coef = (4.0*np.pi*g1.sigma*g2.sigma/(g1.sigma+g2.sigma))^0.25*g1.coef*g2.coef
+    coef = (4.0*np.pi*g1.sigma*g2.sigma/(g1.sigma+g2.sigma))**0.25*g1.coef*g2.coef
     sigma = g1.sigma+g2.sigma
     mu = g2.mu
     return dgatom(coef,sigma,mu)
@@ -89,7 +89,7 @@ def sfastchol(g,krankmax,eps):
         if diag[ipivot[i]] < eps2:
             break
 
-        L[i,ipivot[i]] = sqrt(diag[ipivot[i]])
+        L[i,ipivot[i]] = np.sqrt(diag[ipivot[i]])
 
         for j in range(i+1,g.nterms):
             r1 = np.dot(L[0:i,ipivot[i]],L[0:i,ipivot[j]])
@@ -182,11 +182,10 @@ def compute_energy(phi,v):
     res = 0.0
     for (a1,a2) in product(phi.atoms,phi.atoms):
         res += dgradinnerprod(a1,a2,use_coef=True)
-
+    res *= 0.5
     for (a1,a2,a3) in product(v.atoms,phi.atoms,phi.atoms):
         res += dinnerprod(dprodgatoms(a1,a2),a3,use_coef=True)
-    return 0.5*res
-    
+    return res
 
 def tise_solve(maxiter=20):
     # get representation of exp(-r) as sum of Gaussians
@@ -194,41 +193,44 @@ def tise_solve(maxiter=20):
 
     # v(x)=-8*exp(-x^2)
     v = dgamm(1)
-    v.atoms.append(dgatom(-8.0/(np.pi/2)**0.25,0.5,0.0))
+    v.atoms.append(dgatom(-8.0*(np.pi/2.0)**0.25,0.5,0.0))
 
     # Initial solution
     phi0 = dgamm(2)
-    phi0.atoms.append(dgatom(1.0,1.0,1.0))
     phi0.atoms.append(dgatom(1.0,1.0,-1.0))
+    phi0.atoms.append(dgatom(1.0,1.0,1.0))
 
     # Compute energy
     energy = compute_energy(phi0,v)
     mu = np.sqrt(-2.0*energy)
 
-    eps = 1.0e-10
-    for _ in range(maxiter):
-        vphi = dgatom()
+    print(mu,energy)
 
-        for (a1,a2) in product(v,phi0):
+    eps = 1.0e-10
+    krankmax = 500
+    for _ in range(maxiter):
+        vphi = dgamm()
+
+        for (a1,a2) in product(v.atoms,phi0.atoms):
             a3 = dprodgatoms(a1,a2)
-            if a3.coef > eps:
+            if abs(a3.coef) > eps:
                 vphi.atoms.append(a3)
         vphi.nterms = len(vphi.atoms)
 
         # Reduce the number
-        vϕ = sfastchol(vϕ,krankmax,1e-7)
+        vphi = sfastchol(vphi,krankmax,1e-7)
 
         # Get Green's function
         gf = dgamm(nt)
         for i in range(nt):
-            gf.atoms[i].append(dgatom(-1.0/mu*wei[i]*(np.pi/(2.0*mu*mu*pp[i]))**25,0.5/mu/mu/pp[i],0.0))
+            gf.atoms.append(dgatom(-1.0/mu*wei[i]*(np.pi/(2.0*mu*mu*pp[i]))**0.25,0.5/mu/mu/pp[i],0.0))
 
         phi1 = dgamm()
         for (a1,a2) in product(gf.atoms,vphi.atoms):
             a3 = dconvgatoms(a1,a2)
             if abs(a3.coef) > eps:
                 phi1.atoms.append(a3)
-        phi1.nterms = len(phi.atoms)
+        phi1.nterms = len(phi1.atoms)
         phi1 = sfastchol(phi1,krankmax,1e-7)
 
         # Normalize phi1
@@ -240,18 +242,20 @@ def tise_solve(maxiter=20):
 
         # Update energy
         newenergy = compute_energy(phi1,v)
-        newmu = np.sqrt(-newenergy)
+        newmu = np.sqrt(-2.0*newenergy)
 
         # Update solution
         phi0 = phi1
         energy,mu = newenergy,newmu
+
+        print(energy,mu)
 
     return energy,phi0
 
 
 def test_get_exp_as_gaussian():
     acc = 1.0e-10
-    dnear = 1.0e-5
+    dnear = 1.0e-8
     dfar = 1.0e3
     nt,pp,wei = get_exp_as_gaussian(acc,dnear,dfar)
     print(nt)
@@ -259,28 +263,35 @@ def test_get_exp_as_gaussian():
     print(wei)
 
     nx = 256
-    xx = np.linspace(-10.0,0.0,nx)
+    xx = np.linspace(-10.0,3.0,nx)
     ff = np.exp(-10**xx)
     ff_approx = np.zeros(nx,dtype=float)
     for i in range(nt):
-        ff_approx += wei[i]*np.exp(-pp[i]*10**xx**2)
+        ff_approx += wei[i]*np.exp(-pp[i]*(10**xx)**2)
     
-    # plt.plot(10**xx,ff)
-    plt.plot(10**xx,ff_approx)
+    plt.plot(xx,np.log10(np.abs(ff-ff_approx)+1.0e-16))
     plt.show()
 
-# class zgatom:
+def test_tise_solve():
+    energy,phi = tise_solve()
+    xx = np.linspace(-5.0,5.0,256)
+    plt.plot(xx,phi.eval(xx))
+    plt.show()
+    print(energy)
 
-#     def __init__(self,coef,sigma,mu):
-#         self.coef = coef
-#         self.sigma = sigma
-#         self.mu = mu
+class zgatom:
+    def __init__(self,coef,sigma,mu):
+        self.coef = coef
+        self.sigma = sigma
+        self.mu = mu
 
-#     def eval(self,x):
-#         return self.coef*((1.0/self.sigma+1.0/np.conj(self.sigma))/2.0/np.pi)^0.25*
-#             np.exp(-np.imag(self.μ)^2.0/np.real(self.sigma)/2.0).*np.exp.(-(x-self.μ).^2.0/self.sigma/2.0)
+    def eval(self,x):
+        return self.coef*((1.0/self.sigma+1.0/np.conj(self.sigma))/2.0/np.pi)**0.25*\
+            np.exp(-np.imag(self.mu)**2.0/np.real(self.sigma)/2.0)*np.exp(-(x-self.mu)**2.0/self.sigma/2.0)
 
 import matplotlib.pyplot as plt
 if __name__ == '__main__':
 
-    test_get_exp_as_gaussian()
+    test_tise_solve()
+    # g = dprodgatoms(dgatom(1.0,2.0,3.0),dgatom(4.0,5.0,6.0))
+    # print(g.coef,g.sigma,g.mu)
